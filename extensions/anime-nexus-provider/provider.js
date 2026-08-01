@@ -4,6 +4,7 @@ class Provider {
   constructor() {
     this.base = "https://api.anime.nexus";
     this.webBase = "https://anime.nexus";
+    this.uuidMap = {}; // episode number -> UUID
   }
 
   getSettings() {
@@ -13,22 +14,19 @@ class Provider {
     };
   }
 
-  /**
-   * @param {Object} opts - { query: string }
-   * @returns {Promise<Array<{id: string, title: string, url: string, subOrDub: string}>>}
-   */
+  _log(...args) {
+    console.log("[AnimeNexus]", ...args);
+  }
+
   async search(opts) {
-    this._log("search called with query:", opts.query);
+    this._log("search called with:", opts.query);
     try {
       const url = `${this.base}/api/anime/shows?search=${encodeURIComponent(opts.query)}&sortBy=name+asc&page=1&includes[]=poster&includes[]=genres&hasVideos=1`;
       const res = await fetch(url, {
-        headers: {
-          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-        }
+        headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" }
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
-      this._log("search response:", data);
       if (!data.data || !data.data.length) return [];
       return data.data.map(item => ({
         id: item.id,
@@ -42,25 +40,26 @@ class Provider {
     }
   }
 
-  /**
-   * @param {string} animeId - UUID from search result
-   * @returns {Promise<Array<{id: string, number: number, url: string}>>}
-   */
   async findEpisodes(animeId) {
     this._log("findEpisodes called with animeId:", animeId);
     try {
       const url = `${this.base}/api/anime/details/episodes?id=${animeId}&page=1&perPage=100&order=asc`;
       const res = await fetch(url, {
-        headers: {
-          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-        }
+        headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" }
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
-      this._log("findEpisodes response:", data);
       if (!data.data || !data.data.length) return [];
+      
+      // Build map: episode number -> UUID
+      this.uuidMap = {};
+      data.data.forEach(ep => {
+        this.uuidMap[ep.number] = ep.id;
+      });
+      this._log("UUID map built:", this.uuidMap);
+
       return data.data.map(ep => ({
-        id: ep.id,
+        id: ep.id,          // the UUID
         number: ep.number,
         url: `${this.webBase}/watch/${ep.id}/episode-${ep.number}`
       }));
@@ -70,21 +69,27 @@ class Provider {
     }
   }
 
-  /**
-   * @param {Object} episode - { id, number, url }
-   * @param {string} server - ignored (only one server)
-   * @returns {Promise<{server: string, headers: Object, videoSources: Array}>}
-   */
   async findEpisodeServer(episode, server) {
-    this._log("findEpisodeServer called with episode ID:", episode.id);
+    this._log("findEpisodeServer called with episode object:", JSON.stringify(episode));
     try {
-      const url = `${this.base}/api/anime/details/episode/stream?id=${episode.id}`;
-      this._log("Fetching stream from:", url);
+      const epNumber = episode.number;
+      this._log("Episode number:", epNumber);
+      
+      const uuid = this.uuidMap[epNumber];
+      if (!uuid) {
+        this._log("UUID not found in map for episode", epNumber, "map keys:", Object.keys(this.uuidMap));
+        throw new Error(`UUID not found for episode ${epNumber}`);
+      }
+      this._log("Found UUID:", uuid);
+
+      const url = `${this.base}/api/anime/details/episode/stream?id=${uuid}`;
+      this._log("stream URL:", url);
       const res = await fetch(url, {
         headers: {
           "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
           "Referer": this.webBase + "/",
-          "Origin": this.webBase
+          "Origin": this.webBase,
+          "Accept": "application/json"
         }
       });
       if (!res.ok) {
@@ -92,13 +97,12 @@ class Provider {
         throw new Error(`HTTP ${res.status}: ${text}`);
       }
       const data = await res.json();
-      this._log("Stream response:", data);
-      const hlsUrl = data.data?.hls;
-      if (!hlsUrl) {
-        this._log("No HLS URL found, using fallback test stream");
-        // Return a test stream so we know the extension is working
-        return this._testStream(server);
-      }
+      this._log("stream response:", JSON.stringify(data));
+      
+      const hlsUrl = data?.data?.hls;
+      if (!hlsUrl) throw new Error("No HLS URL in response");
+      
+      this._log("Final HLS URL:", hlsUrl);
       return {
         server: server || "Default",
         headers: {
@@ -109,26 +113,14 @@ class Provider {
           {
             url: hlsUrl,
             type: "m3u8",
-            quality: "1080p",
+            quality: "1080p",  // master playlist includes 1080p
             subtitles: []
           }
         ]
       };
     } catch (e) {
       this._log("findEpisodeServer error:", e.message);
-      // Return a test stream to at least see if playback works
       return this._testStream(server);
-    }
-  }
-
-  // ---------- Helper methods ----------
-  _log(...args) {
-    // Try to use $debug if available (Seanime's built-in logger)
-    if (typeof $debug !== 'undefined' && $debug.info) {
-      $debug.info(...args);
-    } else {
-      // Fallback to console.log – these will appear in logcat
-      console.log("[AnimeNexus]", ...args);
     }
   }
 
@@ -150,5 +142,3 @@ class Provider {
     };
   }
 }
-
-// Must export the class as 'Provider'
