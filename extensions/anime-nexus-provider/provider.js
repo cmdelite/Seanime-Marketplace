@@ -1,9 +1,13 @@
 /// <reference types="@seanime/extension-types" />
 
+// Log at module level to confirm the script loads
+$debug.info("AnimeNexus provider script loaded");
+
 class Provider {
   constructor() {
     this.base = "https://api.anime.nexus";
     this.webBase = "https://anime.nexus";
+    $debug.info("Provider constructor called");
   }
 
   getSettings() {
@@ -14,7 +18,7 @@ class Provider {
   }
 
   async search(opts) {
-    console.log("[AnimeNexus] search called with:", opts.query);
+    $debug.info("search called with:", opts.query);
     try {
       const url = `${this.base}/api/anime/shows?search=${encodeURIComponent(opts.query)}&sortBy=name+asc&page=1&includes[]=poster&includes[]=genres&hasVideos=1`;
       const res = await fetch(url, {
@@ -30,13 +34,13 @@ class Provider {
         subOrDub: "sub"
       }));
     } catch (e) {
-      console.error("[AnimeNexus] search error:", e.message);
+      $debug.error("search error:", e.message);
       return [];
     }
   }
 
   async findEpisodes(animeId) {
-    console.log("[AnimeNexus] findEpisodes called with animeId:", animeId);
+    $debug.info("findEpisodes called with animeId:", animeId);
     try {
       const url = `${this.base}/api/anime/details/episodes?id=${animeId}&page=1&perPage=100&order=asc`;
       const res = await fetch(url, {
@@ -51,18 +55,18 @@ class Provider {
         url: `${this.webBase}/watch/${ep.id}/episode-${ep.number}`
       }));
     } catch (e) {
-      console.error("[AnimeNexus] findEpisodes error:", e.message);
+      $debug.error("findEpisodes error:", e.message);
       return [];
     }
   }
 
   async findEpisodeServer(episode, server) {
-    console.log("[AnimeNexus] findEpisodeServer called with episode:", JSON.stringify(episode));
+    $debug.info("findEpisodeServer called with episode:", JSON.stringify(episode));
     try {
-      // Use the hardcoded UUID (Episode 1 of Naruto)
+      // Hardcoded UUID for Naruto episode 1
       const uuid = "998f50fc-dc39-4557-9e6e-34b4e5a712f1";
       const streamUrl = `${this.base}/api/anime/details/episode/stream?id=${uuid}`;
-      console.log("[AnimeNexus] Fetching stream from:", streamUrl);
+      $debug.info("Fetching stream from:", streamUrl);
 
       const res = await fetch(streamUrl, {
         headers: {
@@ -73,31 +77,31 @@ class Provider {
         }
       });
 
-      console.log("[AnimeNexus] Response status:", res.status);
+      $debug.info("Response status:", res.status);
 
       const rawText = await res.text();
-      console.log("[AnimeNexus] Raw response (first 500 chars):", rawText.substring(0, 500));
+      $debug.info("Raw response (first 500 chars):", rawText.substring(0, 500));
 
       if (!res.ok) {
-        console.error("[AnimeNexus] API returned error:", res.status, rawText);
-        throw new Error(`HTTP ${res.status}: ${rawText.substring(0, 200)}`);
+        $debug.error("API error:", res.status, rawText);
+        throw new Error(`HTTP ${res.status}`);
       }
 
       let data;
       try {
         data = JSON.parse(rawText);
       } catch (e) {
-        console.error("[AnimeNexus] JSON parse error:", e.message);
+        $debug.error("JSON parse error:", e.message);
         throw new Error("Invalid JSON");
       }
 
       const hlsUrl = data?.data?.hls;
       if (!hlsUrl) {
-        console.error("[AnimeNexus] No HLS URL in response:", data);
+        $debug.error("No HLS URL in response:", data);
         throw new Error("No HLS URL");
       }
 
-      console.log("[AnimeNexus] Success! HLS URL:", hlsUrl);
+      $debug.info("Success! HLS URL:", hlsUrl);
 
       return {
         server: server || "Default",
@@ -115,7 +119,7 @@ class Provider {
         ]
       };
     } catch (e) {
-      console.error("[AnimeNexus] Exception in findEpisodeServer:", e.message);
+      $debug.error("Exception in findEpisodeServer:", e.message);
       // Fallback to test stream (so we know the extension is called)
       return {
         server: server || "Default",
