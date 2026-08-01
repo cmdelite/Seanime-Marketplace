@@ -1,0 +1,18 @@
+{
+  "id": "anime-nexus-provider",
+  "name": "Anime Nexus",
+  "description": "Online streaming provider for anime.nexus using its official API.",
+  "version": "1.0.0",
+  "author": "cmdelite & Deepseek",
+  "type": "onlinestream-provider",
+  "language": "javascript",
+  "lang": "en",
+  "icon": "https://raw.githubusercontent.com/cmdelite/Seanime-Marketplace/main/icons/anime-nexus.png",
+  "manifestURI": "https://raw.githubusercontent.com/cmdelite/Seanime-Marketplace/main/extensions/anime-nexus-provider/manifest.json",
+  "payloadURI": "https://raw.githubusercontent.com/cmdelite/Seanime-Marketplace/main/extensions/anime-nexus-provider/provider.js",
+  "workingTag": true,
+  "brokenTag": false,
+  "deprecatedTag": false,
+  "scannedOnVersion": "1.0.0",
+  "lastWorkingVersion": "1.0.0"
+}
