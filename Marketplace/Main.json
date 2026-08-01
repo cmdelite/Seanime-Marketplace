@@ -464,6 +464,24 @@
     "addedAt": "2026-08-01T04:10:34.020Z", "updatedAt": "2026-08-01T08:53:25.074Z"
   },
   {
+  "id": "anime-nexus-provider",
+  "name": "Anime Nexus",
+  "description": "Online streaming provider for anime.nexus using its official API.",
+  "version": "1.0.0",
+  "author": "cmdelite & Deepseek",
+  "type": "onlinestream-provider",
+  "language": "javascript",
+  "lang": "en",
+  "icon": "https://raw.githubusercontent.com/cmdelite/Seanime-Marketplace/animenexus/icons/anime-nexus.png",
+  "manifestURI": "https://raw.githubusercontent.com/cmdelite/Seanime-Marketplace/animenexus/extensions/anime-nexus-provider/manifest.json",
+  "payloadURI": "https://raw.githubusercontent.com/cmdelite/Seanime-Marketplace/animenexus/extensions/anime-nexus-provider/provider.js",
+  "workingTag": true,
+  "brokenTag": false,
+  "deprecatedTag": false,
+  "scannedOnVersion": "1.0.0",
+  "lastWorkingVersion": "1.0.0"
+  },
+  {
     "id": "anime-sama-online-streaming", "name": "FR | Anime Sama", "version": "3.0.3", "author": "TropicalFrog3",
     "description": "Anime Sama est une extension Seanime en français qui permet de regarder des anime dans le catalogue du site anime-sama.com.",
     "type": "onlinestream-provider", "language": "typescript", "lang": "fr",
