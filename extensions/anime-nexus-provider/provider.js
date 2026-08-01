@@ -13,7 +13,6 @@ class Provider {
     };
   }
 
-  // ---------- Search (unchanged) ----------
   async search(opts) {
     try {
       const url = `${this.base}/api/anime/shows?search=${encodeURIComponent(opts.query)}&sortBy=name+asc&page=1&includes[]=poster&includes[]=genres&hasVideos=1`;
@@ -34,7 +33,6 @@ class Provider {
     }
   }
 
-  // ---------- Episodes (we don't need the map now) ----------
   async findEpisodes(animeId) {
     try {
       const url = `${this.base}/api/anime/details/episodes?id=${animeId}&page=1&perPage=100&order=asc`;
@@ -54,27 +52,63 @@ class Provider {
     }
   }
 
-  // ---------- Stream (hardcoded UUID) ----------
   async findEpisodeServer(episode, server) {
     try {
-      // Hardcoded UUID for Naruto episode 1
       const uuid = "998f50fc-dc39-4557-9e6e-34b4e5a712f1";
-      console.log("[AnimeNexus] Hardcoded UUID:", uuid);
-
       const streamUrl = `${this.base}/api/anime/details/episode/stream?id=${uuid}`;
+
+      console.log("[AnimeNexus] Fetching:", streamUrl);
+
       const res = await fetch(streamUrl, {
         headers: {
           "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-          "Referer": this.webBase + "/",
-          "Origin": this.webBase,
+          "Referer": "https://anime.nexus/",
+          "Origin": "https://anime.nexus",
           "Accept": "application/json"
         }
       });
+
+      console.log("[AnimeNexus] Status:", res.status);
+
+      // Get the raw response text (even if it's not JSON)
+      const rawText = await res.text();
+      console.log("[AnimeNexus] Raw response:", rawText);
+
       if (!res.ok) {
-        const text = await res.text();
-        throw new Error(`HTTP ${res.status}: ${text}`);
+        // Return the error as a video source so we can see it
+        return {
+          server: server || "Default",
+          headers: {},
+          videoSources: [
+            {
+              url: "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8",
+              type: "m3u8",
+              quality: "720p",
+              subtitles: [
+                {
+                  lang: "en",
+                  label: "Error Details",
+                  url: "data:text/vtt;base64," + btoa(
+                    "WEBVTT\n\n" +
+                    "00:00:00.000 --> 00:00:10.000\n" +
+                    "Error: " + res.status + "\n" +
+                    rawText.substring(0, 500) + "\n" +
+                    "Check adb logcat for full details."
+                  )
+                }
+              ]
+            }
+          ]
+        };
       }
-      const data = await res.json();
+
+      let data;
+      try {
+        data = JSON.parse(rawText);
+      } catch (e) {
+        throw new Error("Invalid JSON: " + rawText.substring(0, 200));
+      }
+
       const hlsUrl = data?.data?.hls;
       if (!hlsUrl) throw new Error("No HLS URL in response");
 
@@ -95,26 +129,29 @@ class Provider {
       };
     } catch (e) {
       console.log("[AnimeNexus] Error:", e.message);
-      return this._testStream(server);
+      // Return error as subtitle
+      return {
+        server: server || "Default",
+        headers: {},
+        videoSources: [
+          {
+            url: "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8",
+            type: "m3u8",
+            quality: "720p",
+            subtitles: [
+              {
+                lang: "en",
+                label: "Error",
+                url: "data:text/vtt;base64," + btoa(
+                  "WEBVTT\n\n" +
+                  "00:00:00.000 --> 00:00:10.000\n" +
+                  "Error: " + e.message
+                )
+              }
+            ]
+          }
+        ]
+      };
     }
-  }
-
-  // ---------- Fallback test stream ----------
-  _testStream(server) {
-    return {
-      server: server || "Default",
-      headers: {
-        "Referer": this.webBase + "/",
-        "Origin": this.webBase
-      },
-      videoSources: [
-        {
-          url: "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8",
-          type: "m3u8",
-          quality: "720p",
-          subtitles: []
-        }
-      ]
-    };
   }
 }
