@@ -45,173 +45,70 @@ class Provider {
     return results;
   }
 
+  // ---- Simplified episode parser: find ANY episode link ----
   async findEpisodes(animeId) {
-    // Step 1: fetch the main page
     const url = `${this.baseUrl}/anime/${animeId}`;
     const res = await fetch(url);
     const html = await res.text();
 
-    // Step 2: try to find total episode count from the page
-    let totalEpisodes = 0;
-    const totalMatch = html.match(/Total\s*(?:Episodes?|EP)\s*[:;]?\s*(\d+)/i) ||
-                       html.match(/<span[^>]*class\s*=\s*["'][^"']*eps-total[^"']*["'][^>]*>(\d+)<\/span>/i) ||
-                       html.match(/Episodes?\s*(\d+)/i);
-    if (totalMatch) totalEpisodes = parseInt(totalMatch[1]);
+    const episodes = [];
 
-    // Step 3: parse the episode list (with pagination support)
-    const allEpisodes = await this._parseAllPages(html, url, totalEpisodes, animeId);
-
-    if (allEpisodes.length === 0) {
-      // Step 4: fallback to generic link search
-      return this._fallbackEpisodeSearch(html, animeId);
-    }
-
-    return allEpisodes;
-  }
-
-  // ---- Recursive pagination parser ----
-  async _parseAllPages(html, currentUrl, totalEpisodes, animeId) {
-    const items = [];
-    // Try to find the container with episodes
-    const container = this._extractContainer(html);
-    if (!container) return [];
-
-    // Extract all <li data-index> from this page
-    const liRegex = /<li[^>]*data-index\s*=\s*["'](\d+)["'][^>]*>([\s\S]*?)<\/li>/gi;
-    let match;
-    let pageItems = [];
-    while ((match = liRegex.exec(container)) !== null) {
-      const index = parseInt(match[1]);
-      const liContent = match[2];
-      const urlMatch = liContent.match(/<a[^>]*href\s*=\s*["']([^"']+)["'][^>]*>/i);
-      if (!urlMatch) continue;
-      const epUrl = urlMatch[1].trim();
-      // Build absolute URL if needed
-      const fullUrl = epUrl.startsWith('http') ? epUrl : `${this.baseUrl}${epUrl.startsWith('/') ? '' : '/'}${epUrl}`;
-      const titleMatch = liContent.match(/<div[^>]*class\s*=\s*["'][^"']*eps-title[^"']*["'][^>]*>([\s\S]*?)<\/div>/i);
-      const title = titleMatch ? titleMatch[1].trim() : '';
-      pageItems.push({ index, url: fullUrl, title });
-    }
-
-    if (pageItems.length === 0) return [];
-
-    // Check for "Next" page link
-    let nextUrl = null;
-    const nextMatch = html.match(/<a[^>]*href\s*=\s*["']([^"']*page[^"']*|\/\d+|\?page=\d+)[^"']*["'][^>]*>.*?(?:Next|下一|→|»).*?<\/a>/i);
-    if (nextMatch) {
-      let nextHref = nextMatch[1].trim();
-      if (nextHref.startsWith('/')) nextHref = this.baseUrl + nextHref;
-      else if (!nextHref.startsWith('http')) nextHref = this.baseUrl + '/' + nextHref;
-      if (nextHref !== currentUrl) nextUrl = nextHref;
-    }
-
-    // If there's a next page, fetch it recursively
-    let nextItems = [];
-    if (nextUrl) {
-      const nextRes = await fetch(nextUrl);
-      const nextHtml = await nextRes.text();
-      nextItems = await this._parseAllPages(nextHtml, nextUrl, totalEpisodes, animeId);
-    }
-
-    // Merge current and next items
-    const allItems = [...pageItems, ...nextItems];
-
-    // Deduplicate by URL
-    const unique = new Map();
-    for (const item of allItems) {
-      if (!unique.has(item.url)) unique.set(item.url, item);
-    }
-    const uniqueItems = Array.from(unique.values());
-
-    // If we have a totalEpisodes, use it; otherwise use the max index + 1
-    const total = totalEpisodes > 0 ? totalEpisodes : uniqueItems.length;
-
-    // Map reversed index to actual episode number
-    const results = [];
-    for (const item of uniqueItems) {
-      const epNumber = total - item.index;
-      if (epNumber < 1) continue;
-      results.push({
-        id: item.url.split('/').pop() || `${animeId}-episode-${epNumber}`,
-        number: epNumber,
-        url: item.url
-      });
-    }
-
-    results.sort((a, b) => a.number - b.number);
-    return results;
-  }
-
-  // ---- Extract container with episodes ----
-  _extractContainer(html) {
-    const patterns = [
-      /<div[^>]*class\s*=\s*["'][^"']*eplister[^"']*["'][^>]*>([\s\S]*?)<\/div>\s*(?=<div|$)/i,
-      /<div[^>]*class\s*=\s*["'][^"']*ep-list[^"']*["'][^>]*>([\s\S]*?)<\/div>\s*(?=<div|$)/i,
-      /<div[^>]*class\s*=\s*["'][^"']*episodes[^"']*["'][^>]*>([\s\S]*?)<\/div>\s*(?=<div|$)/i,
-    ];
-    for (const pattern of patterns) {
-      const match = html.match(pattern);
-      if (match) return match[1];
-    }
-    // Fallback: search for <ul> containing data-index
-    const ulMatch = html.match(/<ul[^>]*>([\s\S]*?data-index[\s\S]*?)<\/ul>/i);
-    if (ulMatch) return ulMatch[1];
-    return null;
-  }
-
-  // ---- Fallback: generic link search ----
-  async _fallbackEpisodeSearch(html, animeId) {
-    const results = [];
+    // 1) Find all <a> tags
     const linkRegex = /<a\s+([^>]+)>/gi;
     let match;
-    const links = [];
     while ((match = linkRegex.exec(html)) !== null) {
       const attrs = match[1];
       const hrefMatch = attrs.match(/href\s*=\s*["']([^"']+)["']/i);
       if (!hrefMatch) continue;
-      const href = hrefMatch[1];
-      const fullTag = match[0];
-      const closingIndex = html.indexOf('</a>', match.index + fullTag.length);
-      let text = '';
-      if (closingIndex !== -1) {
-        text = html.substring(match.index + fullTag.length, closingIndex).trim();
+      let href = hrefMatch[1].trim();
+
+      // Build absolute URL
+      if (!href.startsWith('http')) {
+        href = href.startsWith('/') ? this.baseUrl + href : this.baseUrl + '/' + href;
       }
+
+      // Only keep links that are likely episode links
       const lowerHref = href.toLowerCase();
-      const lowerText = text.toLowerCase();
-      if (lowerHref.includes('episode') || lowerText.includes('episode') || href.match(/\/(\d+)(?:\/|$)/)) {
-        if (!lowerText.includes('previous') && !lowerText.includes('next')) {
-          links.push({ href, text });
-        }
-      }
-    }
-    for (const link of links) {
+      if (!lowerHref.includes('watch') && !lowerHref.includes('episode')) continue;
+
+      // Extract episode number from href or link text
       let number = 0;
-      const numText = link.text.match(/(\d+)/);
-      if (numText) number = parseInt(numText[1]);
+      const numFromUrl = href.match(/episode[-_]?(\d+)/i) || href.match(/ep[-_]?(\d+)/i) || href.match(/\/(\d+)(?:\/|$)/);
+      if (numFromUrl) number = parseInt(numFromUrl[1]);
+
+      // If not, try from link text
       if (!number) {
-        const urlNum = link.href.match(/episode[-_]?(\d+)/i) ||
-                       link.href.match(/ep[-_]?(\d+)/i) ||
-                       link.href.match(/\/(\d+)(?:\/|$)/);
-        if (urlNum) number = parseInt(urlNum[1]);
-      }
-      if (number) {
-        const exists = results.some(ep => ep.number === number);
-        if (!exists) {
-          let fullUrl = link.href;
-          if (!fullUrl.startsWith('http')) fullUrl = this.baseUrl + (fullUrl.startsWith('/') ? '' : '/') + fullUrl;
-          results.push({
-            id: fullUrl.split('/').pop() || `${animeId}-episode-${number}`,
-            number: number,
-            url: fullUrl
-          });
+        const fullTag = match[0];
+        const closingIndex = html.indexOf('</a>', match.index + fullTag.length);
+        if (closingIndex !== -1) {
+          const text = html.substring(match.index + fullTag.length, closingIndex).trim();
+          const numFromText = text.match(/(\d+)/);
+          if (numFromText) number = parseInt(numFromText[1]);
         }
       }
+
+      if (number) {
+        episodes.push({ number, url: href });
+      }
     }
-    results.sort((a, b) => a.number - b.number);
-    return results;
+
+    // Deduplicate by URL
+    const unique = new Map();
+    for (const ep of episodes) {
+      if (!unique.has(ep.url)) unique.set(ep.url, ep);
+    }
+
+    const result = Array.from(unique.values());
+    result.sort((a, b) => a.number - b.number);
+
+    return result.map(ep => ({
+      id: ep.url.split('/').pop() || `${animeId}-episode-${ep.number}`,
+      number: ep.number,
+      url: ep.url
+    }));
   }
 
-  // ---- Stream (unchanged) ----
+  // ---- Stream extraction (unchanged) ----
   async findEpisodeServer(episode, server) {
     const url = episode.url;
     const res = await fetch(url);
