@@ -45,7 +45,7 @@ class Provider {
     return results;
   }
 
-  // ---- Universal episode parser ----
+  // ---- Ultra‑permissive episode parser ----
   async findEpisodes(animeId) {
     const results = [];
     const url = `${this.baseUrl}/anime/${animeId}`;
@@ -60,13 +60,16 @@ class Provider {
       const hrefMatch = attrs.match(/href\s*=\s*["']([^"']+)["']/i);
       if (!hrefMatch) continue;
       const href = hrefMatch[1];
-      if (!href.includes('/watch/') && !href.includes('/episode/') && !href.includes('/anime/')) continue;
       const fullTag = match[0];
       const closingIndex = html.indexOf('</a>', match.index + fullTag.length);
       let text = '';
       if (closingIndex !== -1) {
         text = html.substring(match.index + fullTag.length, closingIndex).trim();
       }
+      const lowerHref = href.toLowerCase();
+      const lowerText = text.toLowerCase();
+      if (!lowerHref.includes('episode') && !lowerText.includes('episode')) continue;
+      if (lowerText.includes('previous') || lowerText.includes('next')) continue;
       links.push({ href, text });
     }
 
@@ -75,17 +78,10 @@ class Provider {
       const numText = link.text.match(/(\d+)/);
       if (numText) number = parseInt(numText[1]);
       if (!number) {
-        const urlNum = link.href.match(/episode[-_]?(\d+)/i) || link.href.match(/ep[-_]?(\d+)/i);
+        const urlNum = link.href.match(/episode[-_]?(\d+)/i) || 
+                       link.href.match(/ep[-_]?(\d+)/i) ||
+                       link.href.match(/\/(\d+)(?:\/|$)/);
         if (urlNum) number = parseInt(urlNum[1]);
-      }
-      if (!number) {
-        const parts = link.href.split('/');
-        for (const part of parts) {
-          if (part.match(/^\d+$/)) {
-            number = parseInt(part);
-            break;
-          }
-        }
       }
       if (number) {
         results.push({
@@ -107,7 +103,7 @@ class Provider {
     return finalResults;
   }
 
-  // ---- Stream (same as before) ----
+  // ---- Stream (unchanged) ----
   async findEpisodeServer(episode, server) {
     const url = episode.url;
     const res = await fetch(url);
