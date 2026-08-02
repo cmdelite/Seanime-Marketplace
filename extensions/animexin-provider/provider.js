@@ -6,7 +6,6 @@ class Provider {
     this.name = "AnimeXin";
   }
 
-  // ---- Language options (appear in server dropdown) ----
   getSettings() {
     return {
       episodeServers: [
@@ -18,7 +17,6 @@ class Provider {
     };
   }
 
-  // ---- Base64 decode (for Dailymotion) ----
   _atob(input) {
     const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=';
     let str = input.replace(/=+$/, '');
@@ -29,13 +27,11 @@ class Provider {
     return output;
   }
 
-  // ---- Search ----
   async search(opts) {
     const results = [];
     const url = `${this.baseUrl}/?s=${encodeURIComponent(opts.query)}`;
     const res = await fetch(url);
     const html = await res.text();
-
     const regex = /<article class="bs"[^>]*>.*?<a href="([^"]+)"[^>]*>.*?<img src="([^"]+)"[^>]*>.*?<h2[^>]*>(.*?)<\/h2>/gs;
     let match;
     while ((match = regex.exec(html)) !== null) {
@@ -49,34 +45,74 @@ class Provider {
     return results;
   }
 
-  // ---- Episodes ----
+  // ---- Universal episode parser ----
   async findEpisodes(animeId) {
     const results = [];
     const url = `${this.baseUrl}/anime/${animeId}`;
     const res = await fetch(url);
     const html = await res.text();
 
-    const regex = /<a href="([^"]+)">\s*<div class="epl-num">([\d.]+)<\/div>/g;
+    const linkRegex = /<a\s+([^>]+)>/gi;
     let match;
-    while ((match = regex.exec(html)) !== null) {
-      const epUrl = match[1].trim();
-      results.push({
-        id: epUrl.split('/').pop() || '',
-        number: parseInt(match[2], 10),
-        url: epUrl
-      });
+    const links = [];
+    while ((match = linkRegex.exec(html)) !== null) {
+      const attrs = match[1];
+      const hrefMatch = attrs.match(/href\s*=\s*["']([^"']+)["']/i);
+      if (!hrefMatch) continue;
+      const href = hrefMatch[1];
+      if (!href.includes('/watch/') && !href.includes('/episode/') && !href.includes('/anime/')) continue;
+      const fullTag = match[0];
+      const closingIndex = html.indexOf('</a>', match.index + fullTag.length);
+      let text = '';
+      if (closingIndex !== -1) {
+        text = html.substring(match.index + fullTag.length, closingIndex).trim();
+      }
+      links.push({ href, text });
     }
-    results.reverse();
-    return results;
+
+    for (const link of links) {
+      let number = 0;
+      const numText = link.text.match(/(\d+)/);
+      if (numText) number = parseInt(numText[1]);
+      if (!number) {
+        const urlNum = link.href.match(/episode[-_]?(\d+)/i) || link.href.match(/ep[-_]?(\d+)/i);
+        if (urlNum) number = parseInt(urlNum[1]);
+      }
+      if (!number) {
+        const parts = link.href.split('/');
+        for (const part of parts) {
+          if (part.match(/^\d+$/)) {
+            number = parseInt(part);
+            break;
+          }
+        }
+      }
+      if (number) {
+        results.push({
+          id: link.href.split('/').pop() || '',
+          number: number,
+          url: link.href
+        });
+      }
+    }
+
+    const unique = new Map();
+    for (const ep of results) {
+      if (!unique.has(ep.url)) {
+        unique.set(ep.url, ep);
+      }
+    }
+    const finalResults = Array.from(unique.values());
+    finalResults.sort((a, b) => a.number - b.number);
+    return finalResults;
   }
 
-  // ---- Stream ----
+  // ---- Stream (same as before) ----
   async findEpisodeServer(episode, server) {
     const url = episode.url;
     const res = await fetch(url);
     const html = await res.text();
 
-    // Parse all option values
     const optionRegex = /<option value="([^"]+)"[^>]*>\s*([\s\S]*?)\s*<\/option>/g;
     const options = [];
     let match;
@@ -84,23 +120,18 @@ class Provider {
       const value = match[1].trim();
       const label = match[2].trim();
       if (!value) continue;
-      // Extract language from label (case‑insensitive)
       const langMatch = label.match(/(English|Indonesian|Thai|Arabic|Bangla|Turkish|Spanish|Italian|German|Portuguese|Polish)/i);
       const language = langMatch ? langMatch[0].toLowerCase() : null;
       options.push({ value, label, language });
     }
 
-    // Filter by selected language (if provided)
     let filtered = options;
     if (server && server !== "Default") {
       const selectedLang = server.toLowerCase();
       filtered = options.filter(opt => opt.language === selectedLang);
     }
-
-    // If no options match, use all options as fallback
     if (filtered.length === 0) filtered = options;
 
-    // Try each option in order
     for (const opt of filtered) {
       try {
         const stream = await this._extractAny(opt.value, opt.label);
@@ -109,11 +140,9 @@ class Provider {
         continue;
       }
     }
-
     throw new Error("No working stream found");
   }
 
-  // ---- Generic extractor ----
   async _extractAny(url, label) {
     if (url.includes("dailymotion.com")) {
       return await this._extractDailymotion(url, label);
@@ -121,7 +150,6 @@ class Provider {
     if (url.includes("ok.ru")) {
       return await this._extractOkru(url, label);
     }
-    // For other platforms (Odysee, Rumble, etc.)
     try {
       const pageRes = await fetch(url);
       const pageHtml = await pageRes.text();
@@ -137,7 +165,6 @@ class Provider {
     throw new Error("Unsupported host");
   }
 
-  // ---- Dailymotion ----
   async _extractDailymotion(url, label) {
     const videoId = url.match(/video\/([a-zA-Z0-9]+)/)?.[1] ||
                     url.match(/embed\/video\/([a-zA-Z0-9]+)/)?.[1];
@@ -147,17 +174,13 @@ class Provider {
     const hlsLink = metaJson.qualities?.auto?.[0]?.url;
     if (!hlsLink) throw new Error("No HLS");
     const bestHls = await this._getBestHls(hlsLink);
-
-    // Extract soft subtitles
     const subs = (metaJson.subtitles || []).map(sub => ({
       lang: sub.label || "Unknown",
       url: sub.url
     }));
-
     return this._makeVideoSource(bestHls, label, subs);
   }
 
-  // ---- Ok.ru ----
   async _extractOkru(url, label) {
     const res = await fetch(url);
     const html = await res.text();
@@ -172,7 +195,6 @@ class Provider {
     throw new Error("No Ok.ru video");
   }
 
-  // ---- Helper: parse HLS master for best quality ----
   async _getBestHls(hlsUrl) {
     try {
       const res = await fetch(hlsUrl);
@@ -189,7 +211,6 @@ class Provider {
     } catch { return hlsUrl; }
   }
 
-  // ---- Helper: build video source ----
   _makeVideoSource(url, label, subs) {
     return {
       server: label,
@@ -202,4 +223,4 @@ class Provider {
       }]
     };
   }
-                                                }
+}
