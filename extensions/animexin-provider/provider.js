@@ -45,61 +45,90 @@ class Provider {
     return results;
   }
 
-  // ---- Episodes (robust) ----
   async findEpisodes(animeId) {
-    const results = [];
+    // Step 1: fetch the main page
     const url = `${this.baseUrl}/anime/${animeId}`;
     const res = await fetch(url);
     const html = await res.text();
 
-    // Try multiple container patterns
-    const containerPatterns = [
-      /<div[^>]*class\s*=\s*["'][^"']*eplister[^"']*["'][^>]*>([\s\S]*?)<\/div>\s*(?=<div|$)/i,
-      /<div[^>]*class\s*=\s*["'][^"']*ep-list[^"']*["'][^>]*>([\s\S]*?)<\/div>\s*(?=<div|$)/i,
-      /<div[^>]*class\s*=\s*["'][^"']*episodes[^"']*["'][^>]*>([\s\S]*?)<\/div>\s*(?=<div|$)/i,
-    ];
+    // Step 2: try to find total episode count from the page
+    let totalEpisodes = 0;
+    const totalMatch = html.match(/Total\s*(?:Episodes?|EP)\s*[:;]?\s*(\d+)/i) ||
+                       html.match(/<span[^>]*class\s*=\s*["'][^"']*eps-total[^"']*["'][^>]*>(\d+)<\/span>/i) ||
+                       html.match(/Episodes?\s*(\d+)/i);
+    if (totalMatch) totalEpisodes = parseInt(totalMatch[1]);
 
-    let container = null;
-    for (const pattern of containerPatterns) {
-      const match = html.match(pattern);
-      if (match) { container = match[1]; break; }
-    }
+    // Step 3: parse the episode list (with pagination support)
+    const allEpisodes = await this._parseAllPages(html, url, totalEpisodes, animeId);
 
-    if (!container) {
-      const ulRegex = /<ul[^>]*>([\s\S]*?)<\/ul>/gi;
-      let ulMatch;
-      while ((ulMatch = ulRegex.exec(html)) !== null) {
-        if (ulMatch[1].includes('data-index')) {
-          container = ulMatch[1];
-          break;
-        }
-      }
-    }
-
-    if (!container) {
+    if (allEpisodes.length === 0) {
+      // Step 4: fallback to generic link search
       return this._fallbackEpisodeSearch(html, animeId);
     }
 
+    return allEpisodes;
+  }
+
+  // ---- Recursive pagination parser ----
+  async _parseAllPages(html, currentUrl, totalEpisodes, animeId) {
+    const items = [];
+    // Try to find the container with episodes
+    const container = this._extractContainer(html);
+    if (!container) return [];
+
+    // Extract all <li data-index> from this page
     const liRegex = /<li[^>]*data-index\s*=\s*["'](\d+)["'][^>]*>([\s\S]*?)<\/li>/gi;
     let match;
-    const items = [];
+    let pageItems = [];
     while ((match = liRegex.exec(container)) !== null) {
       const index = parseInt(match[1]);
       const liContent = match[2];
       const urlMatch = liContent.match(/<a[^>]*href\s*=\s*["']([^"']+)["'][^>]*>/i);
       if (!urlMatch) continue;
       const epUrl = urlMatch[1].trim();
+      // Build absolute URL if needed
+      const fullUrl = epUrl.startsWith('http') ? epUrl : `${this.baseUrl}${epUrl.startsWith('/') ? '' : '/'}${epUrl}`;
       const titleMatch = liContent.match(/<div[^>]*class\s*=\s*["'][^"']*eps-title[^"']*["'][^>]*>([\s\S]*?)<\/div>/i);
       const title = titleMatch ? titleMatch[1].trim() : '';
-      items.push({ index, url: epUrl, title });
+      pageItems.push({ index, url: fullUrl, title });
     }
 
-    const total = items.length;
-    if (total === 0) {
-      return this._fallbackEpisodeSearch(html, animeId);
+    if (pageItems.length === 0) return [];
+
+    // Check for "Next" page link
+    let nextUrl = null;
+    const nextMatch = html.match(/<a[^>]*href\s*=\s*["']([^"']*page[^"']*|\/\d+|\?page=\d+)[^"']*["'][^>]*>.*?(?:Next|下一|→|»).*?<\/a>/i);
+    if (nextMatch) {
+      let nextHref = nextMatch[1].trim();
+      if (nextHref.startsWith('/')) nextHref = this.baseUrl + nextHref;
+      else if (!nextHref.startsWith('http')) nextHref = this.baseUrl + '/' + nextHref;
+      if (nextHref !== currentUrl) nextUrl = nextHref;
     }
 
-    for (const item of items) {
+    // If there's a next page, fetch it recursively
+    let nextItems = [];
+    if (nextUrl) {
+      const nextRes = await fetch(nextUrl);
+      const nextHtml = await nextRes.text();
+      nextItems = await this._parseAllPages(nextHtml, nextUrl, totalEpisodes, animeId);
+    }
+
+    // Merge current and next items
+    const allItems = [...pageItems, ...nextItems];
+
+    // Deduplicate by URL
+    const unique = new Map();
+    for (const item of allItems) {
+      if (!unique.has(item.url)) unique.set(item.url, item);
+    }
+    const uniqueItems = Array.from(unique.values());
+
+    // If we have a totalEpisodes, use it; otherwise use the max index + 1
+    const total = totalEpisodes > 0 ? totalEpisodes : uniqueItems.length;
+
+    // Map reversed index to actual episode number
+    const results = [];
+    for (const item of uniqueItems) {
       const epNumber = total - item.index;
       if (epNumber < 1) continue;
       results.push({
@@ -111,6 +140,23 @@ class Provider {
 
     results.sort((a, b) => a.number - b.number);
     return results;
+  }
+
+  // ---- Extract container with episodes ----
+  _extractContainer(html) {
+    const patterns = [
+      /<div[^>]*class\s*=\s*["'][^"']*eplister[^"']*["'][^>]*>([\s\S]*?)<\/div>\s*(?=<div|$)/i,
+      /<div[^>]*class\s*=\s*["'][^"']*ep-list[^"']*["'][^>]*>([\s\S]*?)<\/div>\s*(?=<div|$)/i,
+      /<div[^>]*class\s*=\s*["'][^"']*episodes[^"']*["'][^>]*>([\s\S]*?)<\/div>\s*(?=<div|$)/i,
+    ];
+    for (const pattern of patterns) {
+      const match = html.match(pattern);
+      if (match) return match[1];
+    }
+    // Fallback: search for <ul> containing data-index
+    const ulMatch = html.match(/<ul[^>]*>([\s\S]*?data-index[\s\S]*?)<\/ul>/i);
+    if (ulMatch) return ulMatch[1];
+    return null;
   }
 
   // ---- Fallback: generic link search ----
@@ -151,10 +197,12 @@ class Provider {
       if (number) {
         const exists = results.some(ep => ep.number === number);
         if (!exists) {
+          let fullUrl = link.href;
+          if (!fullUrl.startsWith('http')) fullUrl = this.baseUrl + (fullUrl.startsWith('/') ? '' : '/') + fullUrl;
           results.push({
-            id: `${animeId}-episode-${number}`,
+            id: fullUrl.split('/').pop() || `${animeId}-episode-${number}`,
             number: number,
-            url: link.href
+            url: fullUrl
           });
         }
       }
