@@ -30,88 +30,146 @@ class Provider {
   async search(opts) {
     const results = [];
     const url = `${this.baseUrl}/?s=${encodeURIComponent(opts.query)}`;
-    const res = await fetch(url);
+    const res = await fetch(url, {
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
+    });
     const html = await res.text();
     const regex = /<article class="bs"[^>]*>.*?<a href="([^"]+)"[^>]*>.*?<img src="([^"]+)"[^>]*>.*?<h2[^>]*>(.*?)<\/h2>/gs;
     let match;
     while ((match = regex.exec(html)) !== null) {
+      const urlPart = match[1].trim();
+      const id = urlPart.split('/').pop() || '';
       results.push({
-        id: match[1].trim().split('/').pop() || '',
+        id: id,
         title: match[3].trim(),
-        url: match[1].trim(),
+        url: urlPart,
         subOrDub: "sub"
       });
     }
     return results;
   }
 
-  // ---- Simplified episode parser: find ANY episode link ----
+  // ---- Exact parser for the eplister structure ----
   async findEpisodes(animeId) {
     const url = `${this.baseUrl}/anime/${animeId}`;
-    const res = await fetch(url);
+    const res = await fetch(url, {
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
+    });
     const html = await res.text();
 
-    const episodes = [];
+    // 1) Find the eplister container
+    const containerMatch = html.match(/<div[^>]*class\s*=\s*["'][^"']*eplister[^"']*["'][^>]*>([\s\S]*?)<\/div>\s*(?=<div|$)/i);
+    if (!containerMatch) return this._fallbackEpisodeSearch(html, animeId);
 
-    // 1) Find all <a> tags
+    // 2) Find the <ul> inside
+    const ulMatch = containerMatch[1].match(/<ul[^>]*>([\s\S]*?)<\/ul>/i);
+    if (!ulMatch) return this._fallbackEpisodeSearch(html, animeId);
+
+    const ulContent = ulMatch[1];
+
+    // 3) Extract all <li data-index="X">
+    const liRegex = /<li[^>]*data-index\s*=\s*["'](\d+)["'][^>]*>([\s\S]*?)<\/li>/gi;
+    let match;
+    const items = [];
+    let maxIndex = 0;
+    while ((match = liRegex.exec(ulContent)) !== null) {
+      const index = parseInt(match[1]);
+      const liContent = match[2];
+      if (index > maxIndex) maxIndex = index;
+
+      const numMatch = liContent.match(/<div[^>]*class\s*=\s*["'][^"']*epl-num[^"']*["'][^>]*>([\s\S]*?)<\/div>/i);
+      if (!numMatch) continue;
+      let epNumber = parseInt(numMatch[1].trim());
+      if (isNaN(epNumber)) continue;
+
+      const urlMatch = liContent.match(/<a[^>]*href\s*=\s*["']([^"']+)["'][^>]*>/i);
+      if (!urlMatch) continue;
+      let href = urlMatch[1].trim();
+      if (!href.startsWith('http')) {
+        href = href.startsWith('/') ? this.baseUrl + href : this.baseUrl + '/' + href;
+      }
+
+      items.push({ index, number: epNumber, url: href });
+    }
+
+    if (items.length === 0) {
+      return this._fallbackEpisodeSearch(html, animeId);
+    }
+
+    const totalEpisodes = maxIndex + 1;
+    const results = [];
+    for (const item of items) {
+      const epNumber = totalEpisodes - item.index;
+      results.push({
+        id: item.url.split('/').pop() || `${animeId}-episode-${epNumber}`,
+        number: epNumber,
+        url: item.url
+      });
+    }
+
+    results.sort((a, b) => a.number - b.number);
+    return results;
+  }
+
+  // ---- Fallback: generic link search ----
+  async _fallbackEpisodeSearch(html, animeId) {
+    const results = [];
     const linkRegex = /<a\s+([^>]+)>/gi;
     let match;
+    const links = [];
     while ((match = linkRegex.exec(html)) !== null) {
       const attrs = match[1];
       const hrefMatch = attrs.match(/href\s*=\s*["']([^"']+)["']/i);
       if (!hrefMatch) continue;
       let href = hrefMatch[1].trim();
-
-      // Build absolute URL
       if (!href.startsWith('http')) {
         href = href.startsWith('/') ? this.baseUrl + href : this.baseUrl + '/' + href;
       }
-
-      // Only keep links that are likely episode links
+      const fullTag = match[0];
+      const closingIndex = html.indexOf('</a>', match.index + fullTag.length);
+      let text = '';
+      if (closingIndex !== -1) {
+        text = html.substring(match.index + fullTag.length, closingIndex).trim();
+      }
       const lowerHref = href.toLowerCase();
-      if (!lowerHref.includes('watch') && !lowerHref.includes('episode')) continue;
-
-      // Extract episode number from href or link text
-      let number = 0;
-      const numFromUrl = href.match(/episode[-_]?(\d+)/i) || href.match(/ep[-_]?(\d+)/i) || href.match(/\/(\d+)(?:\/|$)/);
-      if (numFromUrl) number = parseInt(numFromUrl[1]);
-
-      // If not, try from link text
-      if (!number) {
-        const fullTag = match[0];
-        const closingIndex = html.indexOf('</a>', match.index + fullTag.length);
-        if (closingIndex !== -1) {
-          const text = html.substring(match.index + fullTag.length, closingIndex).trim();
-          const numFromText = text.match(/(\d+)/);
-          if (numFromText) number = parseInt(numFromText[1]);
+      const lowerText = text.toLowerCase();
+      if (lowerHref.includes('watch') || lowerText.includes('episode') || href.match(/\/(\d+)(?:\/|$)/)) {
+        if (!lowerText.includes('previous') && !lowerText.includes('next')) {
+          links.push({ href, text });
         }
       }
-
+    }
+    for (const link of links) {
+      let number = 0;
+      const numText = link.text.match(/(\d+)/);
+      if (numText) number = parseInt(numText[1]);
+      if (!number) {
+        const urlNum = link.href.match(/episode[-_]?(\d+)/i) ||
+                       link.href.match(/ep[-_]?(\d+)/i) ||
+                       link.href.match(/\/(\d+)(?:\/|$)/);
+        if (urlNum) number = parseInt(urlNum[1]);
+      }
       if (number) {
-        episodes.push({ number, url: href });
+        const exists = results.some(ep => ep.number === number);
+        if (!exists) {
+          results.push({
+            id: `${animeId}-episode-${number}`,
+            number: number,
+            url: link.href
+          });
+        }
       }
     }
-
-    // Deduplicate by URL
-    const unique = new Map();
-    for (const ep of episodes) {
-      if (!unique.has(ep.url)) unique.set(ep.url, ep);
-    }
-
-    const result = Array.from(unique.values());
-    result.sort((a, b) => a.number - b.number);
-
-    return result.map(ep => ({
-      id: ep.url.split('/').pop() || `${animeId}-episode-${ep.number}`,
-      number: ep.number,
-      url: ep.url
-    }));
+    results.sort((a, b) => a.number - b.number);
+    return results;
   }
 
-  // ---- Stream extraction (unchanged) ----
+  // ---- Stream extraction ----
   async findEpisodeServer(episode, server) {
     const url = episode.url;
-    const res = await fetch(url);
+    const res = await fetch(url, {
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
+    });
     const html = await res.text();
 
     const optionRegex = /<option value="([^"]+)"[^>]*>\s*([\s\S]*?)\s*<\/option>/g;
@@ -148,7 +206,9 @@ class Provider {
     if (url.includes("dailymotion.com")) return await this._extractDailymotion(url, label);
     if (url.includes("ok.ru")) return await this._extractOkru(url, label);
     try {
-      const pageRes = await fetch(url);
+      const pageRes = await fetch(url, {
+        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
+      });
       const pageHtml = await pageRes.text();
       const iframeMatch = pageHtml.match(/<iframe.*?src="([^"]+)".*?>/);
       if (iframeMatch) return await this._extractAny(iframeMatch[1], label);
@@ -171,7 +231,9 @@ class Provider {
   }
 
   async _extractOkru(url, label) {
-    const res = await fetch(url);
+    const res = await fetch(url, {
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
+    });
     const html = await res.text();
     const fileMatch = html.match(/file\s*:\s*"([^"]+)"/);
     if (fileMatch) return this._makeVideoSource(fileMatch[1], label, []);
