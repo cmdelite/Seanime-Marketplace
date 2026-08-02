@@ -1,0 +1,18 @@
+{
+  "id": "animexin-provider",
+  "name": "AnimeXin",
+  "description": "Donghua streaming with language selection (11 languages) & soft subtitles.",
+  "version": "1.3.0",
+  "author": "cmdelite",
+  "type": "onlinestream-provider",
+  "language": "javascript",
+  "lang": "en",
+  "icon": "https://animexin.dev/wp-content/uploads/2020/06/cropped-index-192x192.jpg",
+  "manifestURI": "https://raw.githubusercontent.com/cmdelite/Seanime-Marketplace/deepseek/extensions/animexin-provider/manifest.json",
+  "payloadURI": "https://raw.githubusercontent.com/cmdelite/Seanime-Marketplace/deepseek/extensions/animexin-provider/provider.js",
+  "workingTag": true,
+  "brokenTag": false,
+  "deprecatedTag": false,
+  "scannedOnVersion": "3.10.2",
+  "lastWorkingVersion": "3.10.2"
+}
