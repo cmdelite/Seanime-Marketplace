@@ -6,7 +6,6 @@ class Provider {
     this.name = "AnimeKhor";
   }
 
-  // ---- Language options ----
   getSettings() {
     return {
       episodeServers: ["English", "Indonesian", "Multi Sub"],
@@ -14,68 +13,160 @@ class Provider {
     };
   }
 
-  // ---- Search ----
+  _atob(input) {
+    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=';
+    let str = input.replace(/=+$/, '');
+    let output = '';
+    for (let bc = 0, bs = 0, buffer, i = 0; buffer = str.charAt(i++); ~buffer && (bs = bc % 4 ? bs * 64 + buffer : buffer, bc++ % 4) ? output += String.fromCharCode(255 & bs >> (-2 * bc & 6)) : 0) {
+      buffer = chars.indexOf(buffer);
+    }
+    return output;
+  }
+
   async search(opts) {
     const results = [];
     const url = `${this.baseUrl}/?s=${encodeURIComponent(opts.query)}`;
-    const res = await fetch(url);
+    const res = await fetch(url, {
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
+    });
     const html = await res.text();
-
     const regex = /<article class="bs"[^>]*>.*?<a href="([^"]+)"[^>]*>.*?<img src="([^"]+)"[^>]*>.*?<h2[^>]*>(.*?)<\/h2>/gs;
     let match;
     while ((match = regex.exec(html)) !== null) {
+      const urlPart = match[1].trim();
+      const id = urlPart.split('/').pop() || '';
       results.push({
-        id: match[1].trim().split('/').pop() || '',
+        id: id,
         title: match[3].trim(),
-        url: match[1].trim(),
+        url: urlPart,
         subOrDub: "sub"
       });
     }
     return results;
   }
 
-  // ---- Episodes ----
   async findEpisodes(animeId) {
-    const results = [];
     const url = `${this.baseUrl}/anime/${animeId}`;
-    const res = await fetch(url);
+    const res = await fetch(url, {
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
+    });
     const html = await res.text();
 
-    const episodeRegex = /<li[^>]*>\s*<a href="([^"]+)"[^>]*>\s*<div class="epl-num">(\d+)<\/div>/g;
+    // 1) Find the eplister container
+    const containerMatch = html.match(/<div[^>]*class\s*=\s*["'][^"']*eplister[^"']*["'][^>]*>([\s\S]*?)<\/div>\s*(?=<div|$)/i);
+    if (!containerMatch) return this._fallbackEpisodeSearch(html, animeId);
+
+    // 2) Find the <ul> inside
+    const ulMatch = containerMatch[1].match(/<ul[^>]*>([\s\S]*?)<\/ul>/i);
+    if (!ulMatch) return this._fallbackEpisodeSearch(html, animeId);
+
+    const ulContent = ulMatch[1];
+
+    // 3) Extract all <li data-index="X">
+    const liRegex = /<li[^>]*data-index\s*=\s*["'](\d+)["'][^>]*>([\s\S]*?)<\/li>/gi;
     let match;
-    while ((match = episodeRegex.exec(html)) !== null) {
-      const epUrl = match[1].trim();
+    const items = [];
+    let maxIndex = 0;
+    while ((match = liRegex.exec(ulContent)) !== null) {
+      const index = parseInt(match[1]);
+      const liContent = match[2];
+      if (index > maxIndex) maxIndex = index;
+
+      const numMatch = liContent.match(/<div[^>]*class\s*=\s*["'][^"']*epl-num[^"']*["'][^>]*>([\s\S]*?)<\/div>/i);
+      if (!numMatch) continue;
+      let epNumber = parseInt(numMatch[1].trim());
+      if (isNaN(epNumber)) continue;
+
+      const urlMatch = liContent.match(/<a[^>]*href\s*=\s*["']([^"']+)["'][^>]*>/i);
+      if (!urlMatch) continue;
+      let href = urlMatch[1].trim();
+      if (!href.startsWith('http')) {
+        href = href.startsWith('/') ? this.baseUrl + href : this.baseUrl + '/' + href;
+      }
+
+      items.push({ index, number: epNumber, url: href });
+    }
+
+    if (items.length === 0) {
+      return this._fallbackEpisodeSearch(html, animeId);
+    }
+
+    const totalEpisodes = maxIndex + 1;
+    const results = [];
+    for (const item of items) {
+      const epNumber = totalEpisodes - item.index;
       results.push({
-        id: epUrl.split('/').pop() || '',
-        number: parseInt(match[2], 10),
-        url: epUrl
+        id: item.url.split('/').pop() || `${animeId}-episode-${epNumber}`,
+        number: epNumber,
+        url: item.url
       });
     }
 
-    if (results.length === 0) {
-      const singleRegex = /<div class="inepcx">\s*<a href="([^"#]+)">\s*<span>New Episode<\/span>/;
-      const singleMatch = singleRegex.exec(html);
-      if (singleMatch) {
-        const epUrl = singleMatch[1].trim();
-        results.push({
-          id: epUrl.split('/').pop() || '',
-          number: 1,
-          url: epUrl
-        });
-      }
-    }
-
-    results.reverse();
+    results.sort((a, b) => a.number - b.number);
     return results;
   }
 
-  // ---- Stream ----
+  // ---- Fallback: generic link search ----
+  async _fallbackEpisodeSearch(html, animeId) {
+    const results = [];
+    const linkRegex = /<a\s+([^>]+)>/gi;
+    let match;
+    const links = [];
+    while ((match = linkRegex.exec(html)) !== null) {
+      const attrs = match[1];
+      const hrefMatch = attrs.match(/href\s*=\s*["']([^"']+)["']/i);
+      if (!hrefMatch) continue;
+      let href = hrefMatch[1].trim();
+      if (!href.startsWith('http')) {
+        href = href.startsWith('/') ? this.baseUrl + href : this.baseUrl + '/' + href;
+      }
+      const fullTag = match[0];
+      const closingIndex = html.indexOf('</a>', match.index + fullTag.length);
+      let text = '';
+      if (closingIndex !== -1) {
+        text = html.substring(match.index + fullTag.length, closingIndex).trim();
+      }
+      const lowerHref = href.toLowerCase();
+      const lowerText = text.toLowerCase();
+      if (lowerHref.includes('watch') || lowerText.includes('episode') || href.match(/\/(\d+)(?:\/|$)/)) {
+        if (!lowerText.includes('previous') && !lowerText.includes('next')) {
+          links.push({ href, text });
+        }
+      }
+    }
+    for (const link of links) {
+      let number = 0;
+      const numText = link.text.match(/(\d+)/);
+      if (numText) number = parseInt(numText[1]);
+      if (!number) {
+        const urlNum = link.href.match(/episode[-_]?(\d+)/i) ||
+                       link.href.match(/ep[-_]?(\d+)/i) ||
+                       link.href.match(/\/(\d+)(?:\/|$)/);
+        if (urlNum) number = parseInt(urlNum[1]);
+      }
+      if (number) {
+        const exists = results.some(ep => ep.number === number);
+        if (!exists) {
+          results.push({
+            id: `${animeId}-episode-${number}`,
+            number: number,
+            url: link.href
+          });
+        }
+      }
+    }
+    results.sort((a, b) => a.number - b.number);
+    return results;
+  }
+
+  // ---- Stream extraction ----
   async findEpisodeServer(episode, server) {
     const url = episode.url;
-    const res = await fetch(url);
+    const res = await fetch(url, {
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
+    });
     const html = await res.text();
 
-    // Parse all option values
     const optionRegex = /<option value="([^"]+)"[^>]*>\s*([\s\S]*?)\s*<\/option>/g;
     const options = [];
     let match;
@@ -83,37 +174,32 @@ class Provider {
       const value = match[1].trim();
       const label = match[2].trim();
       if (!value) continue;
-      // Extract language tag from brackets (e.g., [ENGLISH], [INDONESIAN], [MULTI SUB])
-      const tagMatch = label.match(/\[(ENGLISH|INDONESIAN|MULTI SUB)\]/i);
-      const tag = tagMatch ? tagMatch[1].toLowerCase() : null;
-      options.push({ value, label, tag });
-    }
 
-    // If no dropdown, try to find a Dailymotion iframe directly
-    if (options.length === 0) {
-      const dmMatch = html.match(/dailymotion\.com\/embed\/video\/([a-zA-Z0-9]+)/);
-      if (dmMatch) {
-        const dmUrl = `https://www.dailymotion.com/embed/video/${dmMatch[1]}`;
-        return await this._extractDailymotion(dmUrl, "Dailymotion");
+      let language = null;
+      if (server === "English") {
+        if (label.match(/\[ENGLISH\]/i)) language = "english";
+      } else if (server === "Indonesian") {
+        if (label.match(/\[INDONESIAN\]/i)) language = "indonesian";
+      } else if (server === "Multi Sub") {
+        if (label.match(/\[MULTI SUB\]/i)) language = "multi sub";
       }
-      throw new Error("No video found");
-    }
 
-    // Map server selection to tag filter
-    let filterTag = null;
-    if (server === "English") filterTag = "english";
-    else if (server === "Indonesian") filterTag = "indonesian";
-    else if (server === "Multi Sub") filterTag = "multi sub";
+      if (!language && server !== "Default") {
+        if (label.match(/\[ENGLISH\]/i)) language = "english";
+        else if (label.match(/\[INDONESIAN\]/i)) language = "indonesian";
+        else if (label.match(/\[MULTI SUB\]/i)) language = "multi sub";
+      }
+
+      options.push({ value, label, language });
+    }
 
     let filtered = options;
-    if (filterTag) {
-      filtered = options.filter(opt => opt.tag === filterTag);
+    if (server && server !== "Default") {
+      const selectedLang = server.toLowerCase();
+      filtered = options.filter(opt => opt.language === selectedLang);
     }
-
-    // If no match, use all options as fallback
     if (filtered.length === 0) filtered = options;
 
-    // Try each option in order
     for (const opt of filtered) {
       try {
         const stream = await this._extractAny(opt.value, opt.label);
@@ -122,70 +208,64 @@ class Provider {
         continue;
       }
     }
-
     throw new Error("No working stream found");
   }
 
-  // ---- Generic extractor ----
   async _extractAny(url, label) {
-    if (url.includes("dailymotion.com")) {
-      return await this._extractDailymotion(url, label);
-    }
-    if (url.includes("ok.ru")) {
-      return await this._extractOkru(url, label);
-    }
-    // For other platforms
+    if (url.includes("dailymotion.com")) return await this._extractDailymotion(url, label);
+    if (url.includes("ok.ru")) return await this._extractOkru(url, label);
+    if (url.includes("streamwish")) return await this._extractStreamWish(url, label);
     try {
-      const pageRes = await fetch(url);
+      const pageRes = await fetch(url, {
+        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
+      });
       const pageHtml = await pageRes.text();
       const iframeMatch = pageHtml.match(/<iframe.*?src="([^"]+)".*?>/);
-      if (iframeMatch) {
-        return await this._extractAny(iframeMatch[1], label);
-      }
+      if (iframeMatch) return await this._extractAny(iframeMatch[1], label);
       const srcMatch = pageHtml.match(/<source.*?src="([^"]+)".*?>/);
-      if (srcMatch) {
-        return this._makeVideoSource(srcMatch[1], label, []);
-      }
+      if (srcMatch) return this._makeVideoSource(srcMatch[1], label, []);
     } catch (e) {}
     throw new Error("Unsupported host");
   }
 
-  // ---- Dailymotion ----
   async _extractDailymotion(url, label) {
-    const videoId = url.match(/video\/([a-zA-Z0-9]+)/)?.[1] ||
-                    url.match(/embed\/video\/([a-zA-Z0-9]+)/)?.[1];
+    const videoId = url.match(/video\/([a-zA-Z0-9]+)/)?.[1] || url.match(/embed\/video\/([a-zA-Z0-9]+)/)?.[1];
     if (!videoId) throw new Error("No Dailymotion ID");
     const metaRes = await fetch(`https://www.dailymotion.com/player/metadata/video/${videoId}`);
     const metaJson = await metaRes.json();
     const hlsLink = metaJson.qualities?.auto?.[0]?.url;
     if (!hlsLink) throw new Error("No HLS");
     const bestHls = await this._getBestHls(hlsLink);
-
-    // Extract soft subtitles
-    const subs = (metaJson.subtitles || []).map(sub => ({
-      lang: sub.label || "Unknown",
-      url: sub.url
-    }));
-
+    const subs = (metaJson.subtitles || []).map(sub => ({ lang: sub.label || "Unknown", url: sub.url }));
     return this._makeVideoSource(bestHls, label, subs);
   }
 
-  // ---- Ok.ru ----
   async _extractOkru(url, label) {
-    const res = await fetch(url);
+    const res = await fetch(url, {
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
+    });
     const html = await res.text();
     const fileMatch = html.match(/file\s*:\s*"([^"]+)"/);
-    if (fileMatch) {
-      return this._makeVideoSource(fileMatch[1], label, []);
-    }
+    if (fileMatch) return this._makeVideoSource(fileMatch[1], label, []);
     const srcMatch = html.match(/<source.*?src="([^"]+)".*?>/);
-    if (srcMatch) {
-      return this._makeVideoSource(srcMatch[1], label, []);
-    }
+    if (srcMatch) return this._makeVideoSource(srcMatch[1], label, []);
     throw new Error("No Ok.ru video");
   }
 
-  // ---- Helper: parse HLS master ----
+  async _extractStreamWish(url, label) {
+    const res = await fetch(url, {
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
+    });
+    const html = await res.text();
+    const fileMatch = html.match(/file\s*:\s*"([^"]+)"/);
+    if (fileMatch) return this._makeVideoSource(fileMatch[1], label, []);
+    const srcMatch = html.match(/<source.*?src="([^"]+)".*?>/);
+    if (srcMatch) return this._makeVideoSource(srcMatch[1], label, []);
+    const iframeMatch = html.match(/<iframe.*?src="([^"]+)".*?>/);
+    if (iframeMatch) return await this._extractStreamWish(iframeMatch[1], label);
+    throw new Error("No StreamWish video");
+  }
+
   async _getBestHls(hlsUrl) {
     try {
       const res = await fetch(hlsUrl);
@@ -202,7 +282,6 @@ class Provider {
     } catch { return hlsUrl; }
   }
 
-  // ---- Helper: build video source ----
   _makeVideoSource(url, label, subs) {
     return {
       server: label,
@@ -215,4 +294,4 @@ class Provider {
       }]
     };
   }
-      }
+}
