@@ -17,6 +17,7 @@ class Provider {
     };
   }
 
+  // ---- Base64 decode (for Dailymotion options) ----
   _atob(input) {
     const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=';
     let str = input.replace(/=+$/, '');
@@ -27,6 +28,7 @@ class Provider {
     return output;
   }
 
+  // ---- Search ----
   async search(opts) {
     const results = [];
     const url = `${this.baseUrl}/?s=${encodeURIComponent(opts.query)}`;
@@ -45,116 +47,113 @@ class Provider {
     return results;
   }
 
-  // ---- Pagination‑aware episode parser ----
+  // ---- Episodes (handles reversed list with data-index) ----
   async findEpisodes(animeId) {
-    const allEpisodes = [];
-    let currentUrl = `${this.baseUrl}/anime/${animeId}`;
-    let page = 1;
-    let hasNext = true;
+    const results = [];
+    const url = `${this.baseUrl}/anime/${animeId}`;
+    const res = await fetch(url);
+    const html = await res.text();
 
-    while (hasNext) {
-      const res = await fetch(currentUrl);
-      const html = await res.text();
-
-      const linkRegex = /<a\s+([^>]+)>/gi;
-      let match;
-      const links = [];
-      while ((match = linkRegex.exec(html)) !== null) {
-        const attrs = match[1];
-        const hrefMatch = attrs.match(/href\s*=\s*["']([^"']+)["']/i);
-        if (!hrefMatch) continue;
-        const href = hrefMatch[1];
-        const fullTag = match[0];
-        const closingIndex = html.indexOf('</a>', match.index + fullTag.length);
-        let text = '';
-        if (closingIndex !== -1) {
-          text = html.substring(match.index + fullTag.length, closingIndex).trim();
-        }
-        const lowerHref = href.toLowerCase();
-        const lowerText = text.toLowerCase();
-        if (lowerHref.includes('episode') || lowerText.includes('episode') || href.match(/\/(\d+)(?:\/|$)/)) {
-          if (!lowerText.includes('previous') && !lowerText.includes('next')) {
-            links.push({ href, text });
-          }
-        }
-      }
-
-      for (const link of links) {
-        let number = 0;
-        const numText = link.text.match(/(\d+)/);
-        if (numText) number = parseInt(numText[1]);
-        if (!number) {
-          const urlNum = link.href.match(/episode[-_]?(\d+)/i) || 
-                         link.href.match(/ep[-_]?(\d+)/i) ||
-                         link.href.match(/\/(\d+)(?:\/|$)/);
-          if (urlNum) number = parseInt(urlNum[1]);
-        }
-        if (number) {
-          const exists = allEpisodes.some(ep => ep.number === number);
-          if (!exists) {
-            allEpisodes.push({
-              id: link.href.split('/').pop() || '',
-              number: number,
-              url: link.href
-            });
-          }
-        }
-      }
-
-      // Check for Next Page
-      const nextMatch = html.match(/<a[^>]*href\s*=\s*["']([^"']*page[^"']*|\/\d+|\?page=\d+)[^"']*["'][^>]*>.*?(?:Next|下一|→|»).*?<\/a>/i);
-      if (nextMatch) {
-        let nextUrl = nextMatch[1].trim();
-        if (nextUrl.startsWith('/')) nextUrl = this.baseUrl + nextUrl;
-        else if (!nextUrl.startsWith('http')) nextUrl = this.baseUrl + '/' + nextUrl;
-        if (nextUrl !== currentUrl) {
-          currentUrl = nextUrl;
-          page++;
-          if (page > 50) break;
-          continue;
-        }
-      }
-
-      // Pagination numbers
-      const pageLinks = html.match(/<a[^>]*href\s*=\s*["']([^"']*page[^"']*|\/\d+|\?page=\d+)[^"']*["'][^>]*>/gi);
-      if (pageLinks) {
-        let nextPage = null;
-        for (const pl of pageLinks) {
-          const hrefMatch = pl.match(/href\s*=\s*["']([^"']+)["']/i);
-          if (!hrefMatch) continue;
-          const href = hrefMatch[1];
-          if (href.includes('page=') || href.match(/\/\d+$/)) {
-            const pageNum = href.match(/page[=\/](\d+)/i) || href.match(/\/(\d+)$/);
-            if (pageNum) {
-              const num = parseInt(pageNum[1]);
-              if (num > page) {
-                nextPage = href;
-                break;
-              }
-            }
-          }
-        }
-        if (nextPage) {
-          let nextUrl = nextPage;
-          if (nextUrl.startsWith('/')) nextUrl = this.baseUrl + nextUrl;
-          else if (!nextUrl.startsWith('http')) nextUrl = this.baseUrl + '/' + nextUrl;
-          if (nextUrl !== currentUrl) {
-            currentUrl = nextUrl;
-            page++;
-            if (page > 50) break;
-            continue;
-          }
-        }
-      }
-
-      hasNext = false;
+    // Locate the episode list container
+    const containerRegex = /<div[^>]*class\s*=\s*["'][^"']*eplister[^"']*["'][^>]*>([\s\S]*?)<\/div>\s*(?=<div|$)/i;
+    const containerMatch = html.match(containerRegex);
+    if (!containerMatch) {
+      return this._fallbackEpisodeSearch(html, animeId);
     }
 
-    allEpisodes.sort((a, b) => a.number - b.number);
-    return allEpisodes;
+    const container = containerMatch[1];
+    const ulRegex = /<ul[^>]*>([\s\S]*?)<\/ul>/i;
+    const ulMatch = container.match(ulRegex);
+    if (!ulMatch) {
+      return this._fallbackEpisodeSearch(html, animeId);
+    }
+
+    const ulContent = ulMatch[1];
+    const liRegex = /<li[^>]*data-index\s*=\s*["'](\d+)["'][^>]*>([\s\S]*?)<\/li>/gi;
+    let match;
+    const items = [];
+    while ((match = liRegex.exec(ulContent)) !== null) {
+      const index = parseInt(match[1]);
+      const liContent = match[2];
+      const urlMatch = liContent.match(/<a[^>]*href\s*=\s*["']([^"']+)["'][^>]*>/i);
+      if (!urlMatch) continue;
+      const epUrl = urlMatch[1].trim();
+      const titleMatch = liContent.match(/<div[^>]*class\s*=\s*["'][^"']*eps-title[^"']*["'][^>]*>([\s\S]*?)<\/div>/i);
+      const title = titleMatch ? titleMatch[1].trim() : '';
+      items.push({ index, url: epUrl, title });
+    }
+
+    const total = items.length;
+    if (total === 0) {
+      return this._fallbackEpisodeSearch(html, animeId);
+    }
+
+    // Map reversed index to actual episode number
+    for (const item of items) {
+      const epNumber = total - item.index;
+      if (epNumber < 1) continue;
+      results.push({
+        id: item.url.split('/').pop() || `${animeId}-episode-${epNumber}`,
+        number: epNumber,
+        url: item.url
+      });
+    }
+
+    results.sort((a, b) => a.number - b.number);
+    return results;
   }
 
-  // ---- Stream (unchanged) ----
+  // ---- Fallback: generic link search (if primary fails) ----
+  async _fallbackEpisodeSearch(html, animeId) {
+    const results = [];
+    const linkRegex = /<a\s+([^>]+)>/gi;
+    let match;
+    const links = [];
+    while ((match = linkRegex.exec(html)) !== null) {
+      const attrs = match[1];
+      const hrefMatch = attrs.match(/href\s*=\s*["']([^"']+)["']/i);
+      if (!hrefMatch) continue;
+      const href = hrefMatch[1];
+      const fullTag = match[0];
+      const closingIndex = html.indexOf('</a>', match.index + fullTag.length);
+      let text = '';
+      if (closingIndex !== -1) {
+        text = html.substring(match.index + fullTag.length, closingIndex).trim();
+      }
+      const lowerHref = href.toLowerCase();
+      const lowerText = text.toLowerCase();
+      if (lowerHref.includes('episode') || lowerText.includes('episode') || href.match(/\/(\d+)(?:\/|$)/)) {
+        if (!lowerText.includes('previous') && !lowerText.includes('next')) {
+          links.push({ href, text });
+        }
+      }
+    }
+    for (const link of links) {
+      let number = 0;
+      const numText = link.text.match(/(\d+)/);
+      if (numText) number = parseInt(numText[1]);
+      if (!number) {
+        const urlNum = link.href.match(/episode[-_]?(\d+)/i) ||
+                       link.href.match(/ep[-_]?(\d+)/i) ||
+                       link.href.match(/\/(\d+)(?:\/|$)/);
+        if (urlNum) number = parseInt(urlNum[1]);
+      }
+      if (number) {
+        const exists = results.some(ep => ep.number === number);
+        if (!exists) {
+          results.push({
+            id: `${animeId}-episode-${number}`,
+            number: number,
+            url: link.href
+          });
+        }
+      }
+    }
+    results.sort((a, b) => a.number - b.number);
+    return results;
+  }
+
+  // ---- Stream extraction ----
   async findEpisodeServer(episode, server) {
     const url = episode.url;
     const res = await fetch(url);
@@ -190,6 +189,7 @@ class Provider {
     throw new Error("No working stream found");
   }
 
+  // ---- Generic extractor (dispatches by URL) ----
   async _extractAny(url, label) {
     if (url.includes("dailymotion.com")) return await this._extractDailymotion(url, label);
     if (url.includes("ok.ru")) return await this._extractOkru(url, label);
@@ -204,6 +204,7 @@ class Provider {
     throw new Error("Unsupported host");
   }
 
+  // ---- Dailymotion extractor (with soft subtitles) ----
   async _extractDailymotion(url, label) {
     const videoId = url.match(/video\/([a-zA-Z0-9]+)/)?.[1] || url.match(/embed\/video\/([a-zA-Z0-9]+)/)?.[1];
     if (!videoId) throw new Error("No Dailymotion ID");
@@ -216,6 +217,7 @@ class Provider {
     return this._makeVideoSource(bestHls, label, subs);
   }
 
+  // ---- Ok.ru extractor ----
   async _extractOkru(url, label) {
     const res = await fetch(url);
     const html = await res.text();
@@ -226,6 +228,7 @@ class Provider {
     throw new Error("No Ok.ru video");
   }
 
+  // ---- Helper: get best quality from master playlist ----
   async _getBestHls(hlsUrl) {
     try {
       const res = await fetch(hlsUrl);
@@ -242,6 +245,7 @@ class Provider {
     } catch { return hlsUrl; }
   }
 
+  // ---- Helper: build video source ----
   _makeVideoSource(url, label, subs) {
     return {
       server: label,
