@@ -13,6 +13,7 @@ class Provider {
     };
   }
 
+  // ---- Base64 decode (for Dailymotion options) ----
   _atob(input) {
     const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=';
     let str = input.replace(/=+$/, '');
@@ -23,11 +24,12 @@ class Provider {
     return output;
   }
 
+  // ---- Search ----
   async search(opts) {
     const results = [];
     const url = `${this.baseUrl}/?s=${encodeURIComponent(opts.query)}`;
     const res = await fetch(url, {
-      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
+      headers: { 'User-Agent': 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36' }
     });
     const html = await res.text();
     const regex = /<article class="bs"[^>]*>.*?<a href="([^"]+)"[^>]*>.*?<img src="([^"]+)"[^>]*>.*?<h2[^>]*>(.*?)<\/h2>/gs;
@@ -45,65 +47,39 @@ class Provider {
     return results;
   }
 
+  // ---- Episodes (direct from epl-num) ----
   async findEpisodes(animeId) {
     const url = `${this.baseUrl}/anime/${animeId}`;
     const res = await fetch(url, {
-      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
+      headers: { 'User-Agent': 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36' }
     });
     const html = await res.text();
 
-    // 1) Find the eplister container
-    const containerMatch = html.match(/<div[^>]*class\s*=\s*["'][^"']*eplister[^"']*["'][^>]*>([\s\S]*?)<\/div>\s*(?=<div|$)/i);
-    if (!containerMatch) return this._fallbackEpisodeSearch(html, animeId);
-
-    // 2) Find the <ul> inside
-    const ulMatch = containerMatch[1].match(/<ul[^>]*>([\s\S]*?)<\/ul>/i);
-    if (!ulMatch) return this._fallbackEpisodeSearch(html, animeId);
-
-    const ulContent = ulMatch[1];
-
-    // 3) Extract all <li data-index="X">
-    const liRegex = /<li[^>]*data-index\s*=\s*["'](\d+)["'][^>]*>([\s\S]*?)<\/li>/gi;
+    const episodes = [];
+    const epRegex = /<a href="([^"]+)"><div class="epl-num">([^<]+)<\/div><div class="epl-title">([^<]*)<\/div>/g;
     let match;
-    const items = [];
-    let maxIndex = 0;
-    while ((match = liRegex.exec(ulContent)) !== null) {
-      const index = parseInt(match[1]);
-      const liContent = match[2];
-      if (index > maxIndex) maxIndex = index;
+    while ((match = epRegex.exec(html)) !== null) {
+      const url = match[1];
+      const epNumRaw = match[2].trim();
+      const title = match[3].trim();
 
-      const numMatch = liContent.match(/<div[^>]*class\s*=\s*["'][^"']*epl-num[^"']*["'][^>]*>([\s\S]*?)<\/div>/i);
-      if (!numMatch) continue;
-      let epNumber = parseInt(numMatch[1].trim());
-      if (isNaN(epNumber)) continue;
+      const numMatch = epNumRaw.match(/(\d+(?:\.\d+)?)/);
+      const number = numMatch ? parseFloat(numMatch[1]) : episodes.length + 1;
 
-      const urlMatch = liContent.match(/<a[^>]*href\s*=\s*["']([^"']+)["'][^>]*>/i);
-      if (!urlMatch) continue;
-      let href = urlMatch[1].trim();
-      if (!href.startsWith('http')) {
-        href = href.startsWith('/') ? this.baseUrl + href : this.baseUrl + '/' + href;
-      }
-
-      items.push({ index, number: epNumber, url: href });
-    }
-
-    if (items.length === 0) {
-      return this._fallbackEpisodeSearch(html, animeId);
-    }
-
-    const totalEpisodes = maxIndex + 1;
-    const results = [];
-    for (const item of items) {
-      const epNumber = totalEpisodes - item.index;
-      results.push({
-        id: item.url.split('/').pop() || `${animeId}-episode-${epNumber}`,
-        number: epNumber,
-        url: item.url
+      episodes.push({
+        id: url,
+        number,
+        title,
+        url
       });
     }
 
-    results.sort((a, b) => a.number - b.number);
-    return results;
+    episodes.sort((a, b) => a.number - b.number);
+
+    if (!episodes.length) {
+      return this._fallbackEpisodeSearch(html, animeId);
+    }
+    return episodes;
   }
 
   // ---- Fallback: generic link search ----
@@ -163,7 +139,7 @@ class Provider {
   async findEpisodeServer(episode, server) {
     const url = episode.url;
     const res = await fetch(url, {
-      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
+      headers: { 'User-Agent': 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36' }
     });
     const html = await res.text();
 
@@ -211,13 +187,14 @@ class Provider {
     throw new Error("No working stream found");
   }
 
+  // ---- Generic extractor ----
   async _extractAny(url, label) {
     if (url.includes("dailymotion.com")) return await this._extractDailymotion(url, label);
     if (url.includes("ok.ru")) return await this._extractOkru(url, label);
     if (url.includes("streamwish")) return await this._extractStreamWish(url, label);
     try {
       const pageRes = await fetch(url, {
-        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
+        headers: { 'User-Agent': 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36' }
       });
       const pageHtml = await pageRes.text();
       const iframeMatch = pageHtml.match(/<iframe.*?src="([^"]+)".*?>/);
@@ -228,6 +205,7 @@ class Provider {
     throw new Error("Unsupported host");
   }
 
+  // ---- Dailymotion ----
   async _extractDailymotion(url, label) {
     const videoId = url.match(/video\/([a-zA-Z0-9]+)/)?.[1] || url.match(/embed\/video\/([a-zA-Z0-9]+)/)?.[1];
     if (!videoId) throw new Error("No Dailymotion ID");
@@ -240,9 +218,10 @@ class Provider {
     return this._makeVideoSource(bestHls, label, subs);
   }
 
+  // ---- Ok.ru ----
   async _extractOkru(url, label) {
     const res = await fetch(url, {
-      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
+      headers: { 'User-Agent': 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36' }
     });
     const html = await res.text();
     const fileMatch = html.match(/file\s*:\s*"([^"]+)"/);
@@ -252,9 +231,10 @@ class Provider {
     throw new Error("No Ok.ru video");
   }
 
+  // ---- StreamWish ----
   async _extractStreamWish(url, label) {
     const res = await fetch(url, {
-      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
+      headers: { 'User-Agent': 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36' }
     });
     const html = await res.text();
     const fileMatch = html.match(/file\s*:\s*"([^"]+)"/);
@@ -266,6 +246,7 @@ class Provider {
     throw new Error("No StreamWish video");
   }
 
+  // ---- Helper: get best quality from HLS master ----
   async _getBestHls(hlsUrl) {
     try {
       const res = await fetch(hlsUrl);
@@ -282,6 +263,7 @@ class Provider {
     } catch { return hlsUrl; }
   }
 
+  // ---- Helper: build video source ----
   _makeVideoSource(url, label, subs) {
     return {
       server: label,
