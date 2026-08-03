@@ -57,7 +57,7 @@
   "id": "animexin-provider",
   "name": "AnimeXin",
   "description": "Donghua streaming with language selection (11 languages) & soft subtitles.",
-  "version": "1.3.0",
+  "version": "1.0.0",
   "author": "cmdelite",
   "type": "onlinestream-provider",
   "language": "javascript",
